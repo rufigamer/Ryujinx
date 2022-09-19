@@ -12,10 +12,6 @@ namespace Ryujinx.Graphics.Gpu.Engine.MME
     /// </summary>
     class MacroHLE : IMacroEE
     {
-        private const int ColorLayerCountOffset = 0x818;
-        private const int ColorStructSize = 0x40;
-        private const int ZetaLayerCountOffset = 0x1230;
-
         private readonly GPFifoProcessor _processor;
         private readonly MacroHLEFunctionName _functionName;
 
@@ -49,11 +45,8 @@ namespace Ryujinx.Graphics.Gpu.Engine.MME
         {
             switch (_functionName)
             {
-                case MacroHLEFunctionName.ClearColor:
-                    ClearColor(state, arg0);
-                    break;
-                case MacroHLEFunctionName.ClearDepthStencil:
-                    ClearDepthStencil(state, arg0);
+                case MacroHLEFunctionName.DrawElementsIndirect:
+                    DrawElementsIndirect(state, arg0);
                     break;
                 case MacroHLEFunctionName.MultiDrawElementsIndirectCount:
                     MultiDrawElementsIndirectCount(state, arg0);
@@ -63,29 +56,27 @@ namespace Ryujinx.Graphics.Gpu.Engine.MME
             }
         }
 
-        /// <summary>
-        /// Clears one bound color target.
-        /// </summary>
-        /// <param name="state">GPU state at the time of the call</param>
-        /// <param name="arg0">First argument of the call</param>
-        private void ClearColor(IDeviceState state, int arg0)
+        private void DrawElementsIndirect(IDeviceState state, int arg0)
         {
-            int index = (arg0 >> 6) & 0xf;
-            int layerCount = state.Read(ColorLayerCountOffset + index * ColorStructSize);
+            var topology = (PrimitiveTopology)arg0;
 
-            _processor.ThreedClass.Clear(arg0, layerCount);
-        }
+            var count = FetchParam();
+            var instanceCount = FetchParam();
+            var firstIndex = FetchParam();
+            var baseVertex = FetchParam();
+            var baseInstance = FetchParam();
 
-        /// <summary>
-        /// Clears the current depth-stencil target.
-        /// </summary>
-        /// <param name="state">GPU state at the time of the call</param>
-        /// <param name="arg0">First argument of the call</param>
-        private void ClearDepthStencil(IDeviceState state, int arg0)
-        {
-            int layerCount = state.Read(ZetaLayerCountOffset);
+            ulong indirectBufferGpuVa = count.GpuVa;
+            int indexCount = Math.Max(0x10000, count.Word + firstIndex.Word);
 
-            _processor.ThreedClass.Clear(arg0, layerCount);
+            // It should be empty at this point, but clear it just to be safe.
+            Fifo.Clear();
+
+            var bufferCache = _processor.MemoryManager.Physical.BufferCache;
+
+            ulong indirectBufferAddress = bufferCache.TranslateAndCreateBuffer(_processor.MemoryManager, indirectBufferGpuVa, 0x14);
+
+            _processor.ThreedClass.DrawIndirect(indexCount, topology, indirectBufferAddress);
         }
 
         /// <summary>

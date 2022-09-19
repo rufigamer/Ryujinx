@@ -1,5 +1,4 @@
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
-using Ryujinx.Graphics.Shader.StructuredIr;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -12,12 +11,9 @@ namespace Ryujinx.Graphics.Shader.Translation
         // TODO: Non-hardcoded array size.
         public const int SamplerArraySize = 4;
 
-        private const int ThreadsPerWarp = 32;
-
         public ShaderStage Stage { get; }
 
         public bool GpPassthrough { get; }
-        public bool LastInVertexPipeline { get; private set; }
 
         public int ThreadsPerInputPrimitive { get; }
 
@@ -133,13 +129,12 @@ namespace Ryujinx.Graphics.Shader.Translation
             ThreadsPerInputPrimitive = header.ThreadsPerInputPrimitive;
             OutputTopology           = header.OutputTopology;
             MaxOutputVertices        = header.MaxOutputVertexCount;
-            LocalMemorySize          = header.ShaderLocalMemoryLowSize + header.ShaderLocalMemoryHighSize + (header.ShaderLocalMemoryCrsSize / ThreadsPerWarp);
+            LocalMemorySize          = header.ShaderLocalMemoryLowSize + header.ShaderLocalMemoryHighSize;
             ImapTypes                = header.ImapTypes;
             OmapTargets              = header.OmapTargets;
             OmapSampleMask           = header.OmapSampleMask;
             OmapDepth                = header.OmapDepth;
             TransformFeedbackEnabled = gpuAccessor.QueryTransformFeedbackEnabled();
-            LastInVertexPipeline     = header.Stage < ShaderStage.Fragment;
         }
 
         public int GetDepthRegister()
@@ -278,11 +273,14 @@ namespace Ryujinx.Graphics.Shader.Translation
             NextInputAttributesComponents = config.ThisInputAttributesComponents;
             NextInputAttributesPerPatchComponents = config.ThisInputAttributesPerPatchComponents;
             NextUsesFixedFuncAttributes = config.UsedFeatures.HasFlag(FeatureFlags.FixedFuncAttr);
-            MergeOutputUserAttributes(config.UsedInputAttributes, config.UsedInputAttributesPerPatch);
+            MergeOutputUserAttributes(config.UsedInputAttributes | config.PassthroughAttributes, config.UsedInputAttributesPerPatch);
 
-            if (config.Stage != ShaderStage.Fragment)
+            int passthroughAttributes = config.PassthroughAttributes;
+            while (passthroughAttributes != 0)
             {
-                LastInVertexPipeline = false;
+                int bit = BitOperations.TrailingZeroCount(passthroughAttributes);
+                NextInputAttributesComponents |= new UInt128(0xf, 0) << (bit * 4);
+                passthroughAttributes &= ~(1 << bit);
             }
         }
 
@@ -361,6 +359,12 @@ namespace Ryujinx.Graphics.Shader.Translation
         public void SetUsedFeature(FeatureFlags flags)
         {
             UsedFeatures |= flags;
+        }
+
+        public Operand CreateCbuf(int slot, int offset)
+        {
+            SetUsedConstantBuffer(slot);
+            return OperandHelper.Cbuf(slot, offset);
         }
 
         public void SetUsedConstantBuffer(int slot)
@@ -584,7 +588,7 @@ namespace Ryujinx.Graphics.Shader.Translation
             return _cachedImageDescriptors ??= GetTextureOrImageDescriptors(_usedImages, GpuAccessor.QueryBindingImage);
         }
 
-        private static TextureDescriptor[] GetTextureOrImageDescriptors(Dictionary<TextureInfo, TextureMeta> dict, Func<int, bool, int> getBindingCallback)
+        private static TextureDescriptor[] GetTextureOrImageDescriptors(Dictionary<TextureInfo, TextureMeta> dict, Func<int, int> getBindingCallback)
         {
             var descriptors = new TextureDescriptor[dict.Count];
 
@@ -594,8 +598,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                 var info = kv.Key;
                 var meta = kv.Value;
 
-                bool isBuffer = (meta.Type & SamplerType.Mask) == SamplerType.TextureBuffer;
-                int binding = getBindingCallback(i, isBuffer);
+                int binding = getBindingCallback(i);
 
                 descriptors[i] = new TextureDescriptor(binding, meta.Type, info.Format, info.CbufSlot, info.Handle);
                 descriptors[i].SetFlag(meta.UsageFlags);
@@ -603,53 +606,6 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
 
             return descriptors;
-        }
-
-        public (TextureDescriptor, int) FindTextureDescriptor(AstTextureOperation texOp)
-        {
-            TextureDescriptor[] descriptors = GetTextureDescriptors();
-
-            for (int i = 0; i < descriptors.Length; i++)
-            {
-                var descriptor = descriptors[i];
-
-                if (descriptor.CbufSlot == texOp.CbufSlot &&
-                    descriptor.HandleIndex == texOp.Handle &&
-                    descriptor.Format == texOp.Format)
-                {
-                    return (descriptor, i);
-                }
-            }
-
-            return (default, -1);
-        }
-
-        private static int FindDescriptorIndex(TextureDescriptor[] array, AstTextureOperation texOp)
-        {
-            for (int i = 0; i < array.Length; i++)
-            {
-                var descriptor = array[i];
-
-                if (descriptor.Type == texOp.Type &&
-                    descriptor.CbufSlot == texOp.CbufSlot &&
-                    descriptor.HandleIndex == texOp.Handle &&
-                    descriptor.Format == texOp.Format)
-                {
-                    return i;
-                }
-            }
-
-            return -1;
-        }
-
-        public int FindTextureDescriptorIndex(AstTextureOperation texOp)
-        {
-            return FindDescriptorIndex(GetTextureDescriptors(), texOp);
-        }
-
-        public int FindImageDescriptorIndex(AstTextureOperation texOp)
-        {
-            return FindDescriptorIndex(GetImageDescriptors(), texOp);
         }
     }
 }

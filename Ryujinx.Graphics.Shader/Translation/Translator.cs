@@ -85,6 +85,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                 config.GetTextureDescriptors(),
                 config.GetImageDescriptors(),
                 config.Stage,
+                config.UsedFeatures.HasFlag(FeatureFlags.GlobalMemory),
                 config.UsedFeatures.HasFlag(FeatureFlags.InstanceId),
                 config.UsedFeatures.HasFlag(FeatureFlags.RtLayer),
                 config.ClipDistancesWritten,
